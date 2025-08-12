@@ -7,10 +7,13 @@ jobs:
   build:
     runs-on: macos-14
     steps:
-      - name: Checkout
+      - name: Checkout (with LFS)
         uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
 
-      - name: Select Xcode (best-effort) & show version
+      - name: Select Xcode & show version
         run: |
           set -e
           if [ -d "/Applications/Xcode_16.0.app" ]; then
@@ -18,31 +21,48 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Show repo tree (debug)
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 2 -print
+
       - name: Detect project/workspace and scheme
         id: detect
         shell: bash
         run: |
           set -euo pipefail
-          if ls *.xcworkspace >/dev/null 2>&1; then
-            FILE=$(ls *.xcworkspace | head -n1)
-            KIND=workspace
-            LIST=$(xcodebuild -list -workspace "$FILE")
-          elif ls *.xcodeproj >/dev/null 2>&1; then
-            FILE=$(ls *.xcodeproj | head -n1)
+          # Find workspace or project anywhere in the repo
+          if WORK=$(find . -type d -name "*.xcworkspace" | head -n1); then
+            if [ -n "$WORK" ]; then
+              KIND=workspace
+              FILE="$WORK"
+              LIST=$(xcodebuild -list -workspace "$FILE")
+            fi
+          fi
+          if [ -z "${FILE:-}" ]; then
+            PROJ=$(find . -type d -name "*.xcodeproj" | head -n1)
+            if [ -z "$PROJ" ]; then
+              echo "❌ No .xcodeproj or .xcworkspace found" >&2
+              exit 1
+            fi
+            # Verify the project bundle actually contains project.pbxproj
+            if [ ! -f "$PROJ/project.pbxproj" ]; then
+              echo "❌ $PROJ exists but project.pbxproj is missing. This usually means LFS or files weren’t fetched." >&2
+              exit 66
+            fi
             KIND=project
+            FILE="$PROJ"
             LIST=$(xcodebuild -list -project "$FILE")
-          else
-            echo "❌ No .xcodeproj or .xcworkspace found at repo root" >&2
-            exit 1
           fi
           echo "$LIST"
-          SCHEME=$(echo "$LIST" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | head -n1 | sed 's/^\s*//;s/\s*$//')
+          SCHEME=$(echo "$LIST" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | head -n1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           if [ -z "${SCHEME:-}" ]; then
-            echo "❌ Could not detect a shared scheme. Make sure your scheme is **Shared** in Xcode." >&2
+            echo "❌ Could not detect a shared scheme. Make sure at least one scheme is Shared in Xcode." >&2
             exit 1
           fi
-          echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "kind=$KIND" >> $GITHUB_OUTPUT
+          echo "file=$FILE"   >> $GITHUB_OUTPUT
+          echo "kind=$KIND"   >> $GITHUB_OUTPUT
           echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
 
       - name: Build (iOS Simulator, signing OFF)
@@ -57,22 +77,16 @@ jobs:
             xcodebuild \
               -workspace "${{ steps.detect.outputs.file }}" \
               -scheme "${{ steps.detect.outputs.scheme }}" \
-              -sdk "$SDK" \
-              -configuration "$CONFIG" \
-              -destination "$DEST" \
-              -derivedDataPath "$DERIVED" \
-              CODE_SIGNING_ALLOWED=NO \
-              build
+              -sdk "$SDK" -configuration "$CONFIG" \
+              -destination "$DEST" -derivedDataPath "$DERIVED" \
+              CODE_SIGNING_ALLOWED=NO build
           else
             xcodebuild \
               -project "${{ steps.detect.outputs.file }}" \
               -scheme "${{ steps.detect.outputs.scheme }}" \
-              -sdk "$SDK" \
-              -configuration "$CONFIG" \
-              -destination "$DEST" \
-              -derivedDataPath "$DERIVED" \
-              CODE_SIGNING_ALLOWED=NO \
-              build
+              -sdk "$SDK" -configuration "$CONFIG" \
+              -destination "$DEST" -derivedDataPath "$DERIVED" \
+              CODE_SIGNING_ALLOWED=NO build
           fi
 
       - name: Zip .app for Appetize
@@ -83,13 +97,12 @@ jobs:
           ls -la "$APP_DIR" || true
           APP_PATH=$(echo "$APP_DIR"/*.app | head -n1)
           if [ ! -d "$APP_PATH" ]; then
-            echo "❌ No .app found. Check previous step for build errors and scheme name." >&2
+            echo "❌ No .app found. Check build step for errors and scheme name." >&2
             exit 1
           fi
           cd "$APP_DIR"
-          ZIP_NAME=AppetizeBuild.app.zip
-          zip -r "$ZIP_NAME" "$(basename "$APP_PATH")"
-          mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
+          zip -r AppetizeBuild.app.zip "$(basename "$APP_PATH")"
+          mv AppetizeBuild.app.zip "$GITHUB_WORKSPACE/"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
