@@ -10,51 +10,70 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # OPTIONAL: Show what Xcode is available
-      - name: Xcode version
-        run: xcodebuild -version
-
-      # LIST schemes so we know the correct one to build
-      - name: List schemes (project)
+      - name: Xcode version & list schemes
         run: |
+          set -e
+          xcodebuild -version
           if ls *.xcodeproj 1> /dev/null 2>&1; then
             PROJ=$(ls *.xcodeproj | head -n1)
             echo "Found project: $PROJ"
-            xcodebuild -list -project "$PROJ"
-          else
-            echo "No .xcodeproj found at repo root" >&2
+            xcodebuild -list -project "$PROJ" || true
           fi
-
-      # Build for iOS Simulator — set the scheme here if needed
-      # Food Truck's primary scheme is typically "FoodTruck"
-      - name: Build (iOS Simulator)
-        run: |
-          set -eo pipefail
-          SCHEME="FoodTruck"   # ← change if the scheme name differs in the list step above
-          SDK="iphonesimulator"
-          CONFIG="Release"
-
           if ls *.xcworkspace 1> /dev/null 2>&1; then
-            xcodebuild -workspace *.xcworkspace -scheme "$SCHEME" -sdk $SDK -configuration $CONFIG -destination 'generic/platform=iOS Simulator' build | xcpretty || true
-          else
-            xcodebuild -project *.xcodeproj -scheme "$SCHEME" -sdk $SDK -configuration $CONFIG -destination 'generic/platform=iOS Simulator' build | xcpretty || true
+            WORK=$(ls *.xcworkspace | head -n1)
+            echo "Found workspace: $WORK"
+            xcodebuild -list -workspace "$WORK" || true
           fi
 
-      # Find the built .app and zip it for Appetize
+      - name: Resolve Swift packages (if any)
+        run: |
+          if ls *.xcworkspace 1> /dev/null 2>&1; then
+            xcodebuild -resolvePackageDependencies -workspace *.xcworkspace -scheme "$SCHEME" || true
+          elif ls *.xcodeproj 1> /dev/null 2>&1; then
+            xcodebuild -resolvePackageDependencies -project *.xcodeproj -scheme "$SCHEME" || true
+          fi
+
+      - name: Build for iOS Simulator (signing off)
+        env:
+          # CHANGE THIS if your scheme name is different
+          SCHEME: FoodTruck
+          CONFIG: Release
+          SDK: iphonesimulator
+          DEST: generic/platform=iOS Simulator
+        run: |
+          set -euo pipefail
+          if ls *.xcworkspace 1> /dev/null 2>&1; then
+            xcodebuild \
+              -workspace *.xcworkspace \
+              -scheme "$SCHEME" \
+              -sdk $SDK \
+              -configuration $CONFIG \
+              -destination "$DEST" \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+          else
+            xcodebuild \
+              -project *.xcodeproj \
+              -scheme "$SCHEME" \
+              -sdk $SDK \
+              -configuration $CONFIG \
+              -destination "$DEST" \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+          fi
+
       - name: Zip .app for Appetize
         run: |
-          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -type d -path "*/Build/Products/Release-iphonesimulator/*.app" | head -n1)
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -type d -path "*/Build/Products/${CONFIG}-iphonesimulator/*.app" | head -n1)
           if [ -z "$APP_PATH" ]; then
             echo "No simulator .app found. Check the scheme name in the previous step's output." >&2
             exit 1
           fi
           echo "Using app at: $APP_PATH"
           cd "$(dirname "$APP_PATH")"
-          ZIP_NAME="AppetizeBuild.app.zip"
-          zip -r "$ZIP_NAME" "$(basename "$APP_PATH")"
-          mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
+          zip -r AppetizeBuild.app.zip "$(basename "$APP_PATH")"
+          mv AppetizeBuild.app.zip "$GITHUB_WORKSPACE/"
 
-      # Upload the zipped .app as a downloadable artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
