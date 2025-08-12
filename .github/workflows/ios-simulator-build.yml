@@ -1,0 +1,62 @@
+name: iOS Simulator Build (Appetize)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # OPTIONAL: Show what Xcode is available
+      - name: Xcode version
+        run: xcodebuild -version
+
+      # LIST schemes so we know the correct one to build
+      - name: List schemes (project)
+        run: |
+          if ls *.xcodeproj 1> /dev/null 2>&1; then
+            PROJ=$(ls *.xcodeproj | head -n1)
+            echo "Found project: $PROJ"
+            xcodebuild -list -project "$PROJ"
+          else
+            echo "No .xcodeproj found at repo root" >&2
+          fi
+
+      # Build for iOS Simulator — set the scheme here if needed
+      # Food Truck's primary scheme is typically "FoodTruck"
+      - name: Build (iOS Simulator)
+        run: |
+          set -eo pipefail
+          SCHEME="FoodTruck"   # ← change if the scheme name differs in the list step above
+          SDK="iphonesimulator"
+          CONFIG="Release"
+
+          if ls *.xcworkspace 1> /dev/null 2>&1; then
+            xcodebuild -workspace *.xcworkspace -scheme "$SCHEME" -sdk $SDK -configuration $CONFIG -destination 'generic/platform=iOS Simulator' build | xcpretty || true
+          else
+            xcodebuild -project *.xcodeproj -scheme "$SCHEME" -sdk $SDK -configuration $CONFIG -destination 'generic/platform=iOS Simulator' build | xcpretty || true
+          fi
+
+      # Find the built .app and zip it for Appetize
+      - name: Zip .app for Appetize
+        run: |
+          APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -type d -path "*/Build/Products/Release-iphonesimulator/*.app" | head -n1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No simulator .app found. Check the scheme name in the previous step's output." >&2
+            exit 1
+          fi
+          echo "Using app at: $APP_PATH"
+          cd "$(dirname "$APP_PATH")"
+          ZIP_NAME="AppetizeBuild.app.zip"
+          zip -r "$ZIP_NAME" "$(basename "$APP_PATH")"
+          mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
+
+      # Upload the zipped .app as a downloadable artifact
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appetize-simulator-app
+          path: AppetizeBuild.app.zip
