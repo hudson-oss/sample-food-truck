@@ -1,0 +1,98 @@
+name: iOS Simulator Build (Appetize)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode (best-effort) & show version
+        run: |
+          set -e
+          if [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          fi
+          xcodebuild -version
+
+      - name: Detect project/workspace and scheme
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ls *.xcworkspace >/dev/null 2>&1; then
+            FILE=$(ls *.xcworkspace | head -n1)
+            KIND=workspace
+            LIST=$(xcodebuild -list -workspace "$FILE")
+          elif ls *.xcodeproj >/dev/null 2>&1; then
+            FILE=$(ls *.xcodeproj | head -n1)
+            KIND=project
+            LIST=$(xcodebuild -list -project "$FILE")
+          else
+            echo "❌ No .xcodeproj or .xcworkspace found at repo root" >&2
+            exit 1
+          fi
+          echo "$LIST"
+          SCHEME=$(echo "$LIST" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | head -n1 | sed 's/^\s*//;s/\s*$//')
+          if [ -z "${SCHEME:-}" ]; then
+            echo "❌ Could not detect a shared scheme. Make sure your scheme is **Shared** in Xcode." >&2
+            exit 1
+          fi
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "kind=$KIND" >> $GITHUB_OUTPUT
+          echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
+
+      - name: Build (iOS Simulator, signing OFF)
+        env:
+          CONFIG: Release
+          SDK: iphonesimulator
+          DEST: 'platform=iOS Simulator,name=iPhone 15 Pro'
+          DERIVED: ${{ github.workspace }}/build
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
+            xcodebuild \
+              -workspace "${{ steps.detect.outputs.file }}" \
+              -scheme "${{ steps.detect.outputs.scheme }}" \
+              -sdk "$SDK" \
+              -configuration "$CONFIG" \
+              -destination "$DEST" \
+              -derivedDataPath "$DERIVED" \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+          else
+            xcodebuild \
+              -project "${{ steps.detect.outputs.file }}" \
+              -scheme "${{ steps.detect.outputs.scheme }}" \
+              -sdk "$SDK" \
+              -configuration "$CONFIG" \
+              -destination "$DEST" \
+              -derivedDataPath "$DERIVED" \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+          fi
+
+      - name: Zip .app for Appetize
+        run: |
+          set -euo pipefail
+          APP_DIR="$GITHUB_WORKSPACE/build/Build/Products/${CONFIG}-iphonesimulator"
+          echo "Looking in: $APP_DIR"
+          ls -la "$APP_DIR" || true
+          APP_PATH=$(echo "$APP_DIR"/*.app | head -n1)
+          if [ ! -d "$APP_PATH" ]; then
+            echo "❌ No .app found. Check previous step for build errors and scheme name." >&2
+            exit 1
+          fi
+          cd "$APP_DIR"
+          ZIP_NAME=AppetizeBuild.app.zip
+          zip -r "$ZIP_NAME" "$(basename "$APP_PATH")"
+          mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appetize-simulator-app
+          path: AppetizeBuild.app.zip
