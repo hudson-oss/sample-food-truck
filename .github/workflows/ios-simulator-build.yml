@@ -7,89 +7,46 @@ jobs:
   build:
     runs-on: macos-14
     steps:
-      - name: Checkout
+      - name: Checkout (full, with LFS & submodules)
         uses: actions/checkout@v4
+        with:
+            fetch-depth: 0
+            lfs: true
+            submodules: recursive
 
-      - name: Select Xcode (best-effort) & show version
+      - name: Show repo tree (debug)
         run: |
-          set -e
-          if [ -d "/Applications/Xcode_16.0.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.0.app
-          fi
-          xcodebuild -version
+          pwd
+          ls -la
+          find . -maxdepth 2 -name "*.xcodeproj" -print -exec ls -la {} \; || true
 
-      - name: Detect project/workspace and scheme
-        id: detect
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ls *.xcworkspace >/dev/null 2>&1; then
-            FILE=$(ls *.xcworkspace | head -n1)
-            KIND=workspace
-            LIST=$(xcodebuild -list -workspace "$FILE")
-          elif ls *.xcodeproj >/dev/null 2>&1; then
-            FILE=$(ls *.xcodeproj | head -n1)
-            KIND=project
-            LIST=$(xcodebuild -list -project "$FILE")
-          else
-            echo "❌ No .xcodeproj or .xcworkspace found at repo root" >&2
-            exit 1
-          fi
-          echo "$LIST"
-          SCHEME=$(echo "$LIST" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag' | head -n1 | sed 's/^\s*//;s/\s*$//')
-          if [ -z "${SCHEME:-}" ]; then
-            echo "❌ Could not detect a shared scheme. Make sure your scheme is **Shared** in Xcode." >&2
-            exit 1
-          fi
-          echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "kind=$KIND" >> $GITHUB_OUTPUT
-          echo "scheme=$SCHEME" >> $GITHUB_OUTPUT
-
-      - name: Build (iOS Simulator, signing OFF)
-        env:
-          CONFIG: Release
-          SDK: iphonesimulator
-          DEST: 'platform=iOS Simulator,name=iPhone 15 Pro'
-          DERIVED: ${{ github.workspace }}/build
+      - name: Build Food Truck for iOS Simulator (signing OFF)
         run: |
           set -euo pipefail
-          if [ "${{ steps.detect.outputs.kind }}" = "workspace" ]; then
-            xcodebuild \
-              -workspace "${{ steps.detect.outputs.file }}" \
-              -scheme "${{ steps.detect.outputs.scheme }}" \
-              -sdk "$SDK" \
-              -configuration "$CONFIG" \
-              -destination "$DEST" \
-              -derivedDataPath "$DERIVED" \
-              CODE_SIGNING_ALLOWED=NO \
-              build
-          else
-            xcodebuild \
-              -project "${{ steps.detect.outputs.file }}" \
-              -scheme "${{ steps.detect.outputs.scheme }}" \
-              -sdk "$SDK" \
-              -configuration "$CONFIG" \
-              -destination "$DEST" \
-              -derivedDataPath "$DERIVED" \
-              CODE_SIGNING_ALLOWED=NO \
-              build
-          fi
+          xcodebuild \
+            -project "Food Truck.xcodeproj" \
+            -scheme "Food Truck" \
+            -sdk iphonesimulator \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
       - name: Zip .app for Appetize
         run: |
           set -euo pipefail
-          APP_DIR="$GITHUB_WORKSPACE/build/Build/Products/${CONFIG}-iphonesimulator"
+          APP_DIR="$GITHUB_WORKSPACE/build/Build/Products/Release-iphonesimulator"
           echo "Looking in: $APP_DIR"
           ls -la "$APP_DIR" || true
           APP_PATH=$(echo "$APP_DIR"/*.app | head -n1)
           if [ ! -d "$APP_PATH" ]; then
-            echo "❌ No .app found. Check previous step for build errors and scheme name." >&2
+            echo "❌ No .app found. Check the build step for errors." >&2
             exit 1
           fi
           cd "$APP_DIR"
-          ZIP_NAME=AppetizeBuild.app.zip
-          zip -r "$ZIP_NAME" "$(basename "$APP_PATH")"
-          mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
+          zip -r AppetizeBuild.app.zip "$(basename "$APP_PATH")"
+          mv AppetizeBuild.app.zip "$GITHUB_WORKSPACE/"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
